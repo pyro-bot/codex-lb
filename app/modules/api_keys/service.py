@@ -290,6 +290,7 @@ class ApiKeyCreateData:
     transport_policy_override: str | None = None
     thread_cache_identity_override: str | None = None
     usage_sections: str = "upstream_limits,account_pool_usage"
+    namespace_planning_enabled: bool = False
     expires_at: datetime | None = None
     assigned_account_ids: list[str] | None = None
     assigned_source_ids: list[str] | None = None
@@ -320,6 +321,8 @@ class ApiKeyUpdateData:
     thread_cache_identity_override_set: bool = False
     usage_sections: str | None = None
     usage_sections_set: bool = False
+    namespace_planning_enabled: bool | None = None
+    namespace_planning_enabled_set: bool = False
     expires_at: datetime | None = None
     expires_at_set: bool = False
     is_active: bool | None = None
@@ -352,6 +355,7 @@ class ApiKeyData:
     transport_policy_override: str | None = None
     thread_cache_identity_override: str | None = None
     usage_sections: str = "upstream_limits,account_pool_usage"
+    namespace_planning_enabled: bool = False
     limits: list[LimitRuleData] = field(default_factory=list)
     usage_summary: "ApiKeyUsageSummaryData | None" = None
     account_assignment_scope_enabled: bool = False
@@ -359,6 +363,10 @@ class ApiKeyData:
     assigned_account_ids: list[str] = field(default_factory=list)
     assigned_source_ids: list[str] = field(default_factory=list)
     pooled_credits: "PooledCreditData | None" = None
+    # Request-scoped namespace planning state. These values are never loaded
+    # from storage; proxy endpoint adapters set them with ``dataclasses.replace``.
+    namespace_account_id: str | None = None
+    namespace_account_required: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -519,6 +527,7 @@ class ApiKeysService:
             transport_policy_override=transport_policy_override,
             thread_cache_identity_override=thread_cache_identity_override,
             usage_sections=usage_sections,
+            namespace_planning_enabled=payload.namespace_planning_enabled,
             expires_at=expires_at,
             is_active=True,
             created_at=now,
@@ -672,6 +681,11 @@ class ApiKeysService:
         usage_sections: str | _Unset = _UNSET
         if payload.usage_sections_set:
             usage_sections = _normalize_usage_sections(payload.usage_sections)
+        namespace_planning_enabled: bool | _Unset = _UNSET
+        if payload.namespace_planning_enabled_set:
+            if payload.namespace_planning_enabled is None:
+                raise ApiKeyValidationError("namespace_planning_enabled must be a boolean")
+            namespace_planning_enabled = payload.namespace_planning_enabled
 
         if payload.allowed_models_set or payload.enforced_model_set:
             effective_allowed_models = (
@@ -739,6 +753,7 @@ class ApiKeysService:
                 transport_policy_override=transport_policy_override_update,
                 thread_cache_identity_override=thread_cache_identity_override_update,
                 usage_sections=usage_sections,
+                namespace_planning_enabled=namespace_planning_enabled,
                 account_assignment_scope_enabled=account_assignment_scope_enabled,
                 source_assignment_scope_enabled=source_assignment_scope_enabled,
                 expires_at=expires_at if payload.expires_at_set else _UNSET,
@@ -795,6 +810,7 @@ class ApiKeysService:
             or payload.transport_policy_override_set
             or payload.thread_cache_identity_override_set
             or payload.usage_sections_set
+            or payload.namespace_planning_enabled_set
             or payload.expires_at_set
             or payload.is_active_set
         ):
@@ -1414,7 +1430,7 @@ def _normalize_name(name: str) -> str:
     return normalized
 
 
-_VALID_USAGE_SECTIONS = {"upstream_limits", "account_pool_usage"}
+_VALID_USAGE_SECTIONS = {"upstream_limits", "account_pool_usage", "account_credits"}
 _DEFAULT_USAGE_SECTIONS = "upstream_limits,account_pool_usage"
 
 
@@ -1876,6 +1892,7 @@ def _to_created_data(data: ApiKeyData, key: str) -> ApiKeyCreatedData:
         transport_policy_override=data.transport_policy_override,
         thread_cache_identity_override=data.thread_cache_identity_override,
         usage_sections=data.usage_sections,
+        namespace_planning_enabled=data.namespace_planning_enabled,
         expires_at=data.expires_at,
         is_active=data.is_active,
         created_at=data.created_at,
@@ -1919,6 +1936,7 @@ def _to_api_key_data(
             getattr(row, "thread_cache_identity_override", None)
         ),
         usage_sections=_get_usage_sections_with_default(row),
+        namespace_planning_enabled=bool(getattr(row, "namespace_planning_enabled", False)),
         expires_at=row.expires_at,
         is_active=row.is_active,
         created_at=row.created_at,

@@ -12,11 +12,14 @@ import {
   getAccountUsageResetCredits,
   getRateLimitResetCredits,
   importAccount,
+  getServiceModels,
+  setServiceModels,
   listAccounts,
   pauseAccount,
   probeAccount,
   reactivateAccount,
   setAccountAlias,
+  setAccountRoutingName,
   updateAccount,
   updateAccountLimitWarmup,
   updateAccountRoutingPolicy,
@@ -122,6 +125,12 @@ export function useAccountMutations() {
     onError: (error: Error) => {
       toast.error(error.message || t("accounts.toasts.aliasUpdateFailed"));
     },
+  });
+
+  const setRoutingNameMutation = useMutation({
+    mutationFn: ({ accountId, routingName }: { accountId: string; routingName: string | null }) =>
+      setAccountRoutingName(accountId, routingName),
+    onSuccess: () => void invalidateAccountRelatedQueries(queryClient),
   });
 
   const deleteMutation = useMutation({
@@ -247,6 +256,7 @@ export function useAccountMutations() {
     pauseMutation,
     resumeMutation,
     setAliasMutation,
+    setRoutingNameMutation,
     deleteMutation,
     probeMutation,
     usageResetMutation,
@@ -303,4 +313,14 @@ export function useAccounts() {
   const mutations = useAccountMutations();
 
   return { accountsQuery, ...mutations };
+}
+
+export function useServiceModels(enabled: boolean) {
+  const queryClient = useQueryClient();
+  const query = useQuery({ queryKey: ["accounts", "service-models"], queryFn: getServiceModels, enabled });
+  const mutation = useMutation({
+    mutationFn: setServiceModels,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["accounts", "service-models"] }),
+  });
+  return { query, mutation };
 }

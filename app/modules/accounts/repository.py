@@ -31,6 +31,7 @@ from app.db.models import (
     HttpBridgeSessionState,
     RequestLog,
     RuntimeSentinel,
+    ServiceModel,
     StickySession,
     StickySessionKind,
     UsageHistory,
@@ -968,6 +969,28 @@ class AccountsRepository:
             )
             await self._session.commit()
             return result.scalar_one_or_none() is not None
+
+    async def update_routing_name(self, account_id: str, routing_name: str | None) -> bool:
+        async with sqlite_writer_section():
+            result = await self._session.execute(
+                update(Account)
+                .where(Account.id == account_id)
+                .where(Account.delete_requested_at.is_(None))
+                .values(routing_name=routing_name)
+                .returning(Account.id)
+            )
+            await self._session.commit()
+            return result.scalar_one_or_none() is not None
+
+    async def list_service_models(self) -> list[str]:
+        result = await self._session.execute(select(ServiceModel.model).order_by(ServiceModel.model))
+        return list(result.scalars().all())
+
+    async def replace_service_models(self, models: list[str]) -> None:
+        async with sqlite_writer_section():
+            await self._session.execute(delete(ServiceModel))
+            self._session.add_all([ServiceModel(model=model) for model in models])
+            await self._session.commit()
 
     async def update_limit_warmup_enabled(self, account_id: str, enabled: bool) -> bool:
         async with sqlite_writer_section():

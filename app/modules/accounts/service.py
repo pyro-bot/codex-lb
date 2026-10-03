@@ -684,6 +684,26 @@ class AccountsService:
             normalized = None
         return await self._repo.update_alias(account_id, normalized)
 
+    async def set_routing_name(self, account_id: str, routing_name: str | None) -> bool:
+        normalized = routing_name.strip().lower() if isinstance(routing_name, str) else None
+        if normalized == "":
+            normalized = None
+        result = await self._repo.update_routing_name(account_id, normalized)
+        if result:
+            get_account_selection_cache().invalidate()
+        return result
+
+    async def service_models(self) -> list[str]:
+        return await self._repo.list_service_models()
+
+    async def replace_service_models(self, models: list[str]) -> list[str]:
+        normalized = sorted({model.strip() for model in models if model.strip()})
+        if any(len(model) > 255 for model in normalized):
+            raise ValueError("Service model name must be at most 255 characters")
+        await self._repo.replace_service_models(normalized)
+        get_account_selection_cache().invalidate()
+        return normalized
+
     async def probe_account(
         self,
         account_id: str,

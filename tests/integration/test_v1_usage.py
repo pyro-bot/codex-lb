@@ -19,6 +19,7 @@ async def _create_api_key(
     name: str,
     limits: list[LimitRuleInput] | None = None,
     usage_sections: str = "upstream_limits,account_pool_usage",
+    assigned_account_ids: list[str] | None = None,
 ) -> tuple[str, str]:
     async with SessionLocal() as session:
         service = ApiKeysService(ApiKeysRepository(session))
@@ -27,13 +28,14 @@ async def _create_api_key(
                 name=name,
                 allowed_models=None,
                 usage_sections=usage_sections,
+                assigned_account_ids=assigned_account_ids,
                 limits=limits or [],
             )
         )
     return created.id, created.key
 
 
-async def _seed_upstream_usage(*, now) -> None:
+async def _seed_upstream_usage(*, now) -> tuple[str, str]:
     suffix = str(int(now.timestamp() * 1_000_000))
     account_a_id = f"acc-plus-a-{suffix}"
     account_b_id = f"acc-plus-b-{suffix}"
@@ -100,6 +102,7 @@ async def _seed_upstream_usage(*, now) -> None:
             ]
         )
         await session.commit()
+    return account_a_id, account_b_id
 
 
 async def _seed_upstream_usage_partial(
@@ -318,6 +321,46 @@ async def test_v1_usage_omits_disabled_account_pool_usage_section(async_client):
         "upstream_limits": [],
         "account_pool_usage": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_v1_usage_returns_account_credits_for_only_the_api_key_account_scope(async_client):
+    now = utcnow()
+    account_a_id, account_b_id = await _seed_upstream_usage(now=now)
+    _, plain_key = await _create_api_key(
+        name="scoped-account-credits",
+        usage_sections="upstream_limits,account_pool_usage,account_credits",
+        assigned_account_ids=[account_a_id],
+    )
+
+    response = await async_client.get("/v1/usage", headers={"Authorization": f"Bearer {plain_key}"})
+
+    assert response.status_code == 200
+    account_credits = response.json()["account_credits"]
+    assert [entry["account_id"] for entry in account_credits] == [account_a_id]
+    assert account_b_id not in {entry["account_id"] for entry in account_credits}
+    assert account_credits[0]["limits"] == [
+        {
+            "limit_type": "credits",
+            "limit_window": "5h",
+            "max_value": 225,
+            "current_value": 22,
+            "remaining_value": 203,
+            "model_filter": None,
+            "reset_at": account_credits[0]["limits"][0]["reset_at"],
+            "source": "account_credits",
+        },
+        {
+            "limit_type": "credits",
+            "limit_window": "7d",
+            "max_value": 7560,
+            "current_value": 1512,
+            "remaining_value": 6048,
+            "model_filter": None,
+            "reset_at": account_credits[0]["limits"][1]["reset_at"],
+            "source": "account_credits",
+        },
+    ]
 
 
 @pytest.mark.asyncio

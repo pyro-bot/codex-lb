@@ -20,6 +20,7 @@ from app.db.models import (
     ApiKeyDeactivatedReason,
     ApiKeyLimit,
     ApiKeyModelSourceAssignment,
+    ApiKeyRouteCursor,
     ApiKeyUsageReservation,
     ApiKeyUsageReservationItem,
     ApiKeyUsageRollup,
@@ -229,7 +230,7 @@ class ApiKeysRepository:
             return []
         result = await self._session.execute(
             select(Account)
-            .options(load_only(Account.id, Account.plan_type, Account.status))
+            .options(load_only(Account.id, Account.plan_type, Account.routing_name, Account.status))
             .where(Account.id.in_(account_ids))
             # An account marked for background deletion is already deleted
             # from the operator's point of view: assignment validation must
@@ -248,7 +249,7 @@ class ApiKeysRepository:
     async def list_all_accounts(self) -> list[Account]:
         result = await self._session.execute(
             select(Account)
-            .options(load_only(Account.id, Account.plan_type, Account.status))
+            .options(load_only(Account.id, Account.plan_type, Account.routing_name, Account.status))
             .where(~Account.status.in_((AccountStatus.DEACTIVATED, AccountStatus.PAUSED)))
             # Status alone is not enough: an unfenced pre-upgrade replica can
             # briefly replace a marked account's terminal status during a
@@ -351,6 +352,28 @@ class ApiKeysRepository:
         value = result.scalar_one()
         return int(value or 0)
 
+    async def upsert_route_cursor(
+        self,
+        api_key_id: str,
+        *,
+        account_id: str | None,
+        is_openai_account: bool,
+    ) -> None:
+        row = await self._session.get(ApiKeyRouteCursor, api_key_id)
+        if row is None:
+            self._session.add(
+                ApiKeyRouteCursor(
+                    api_key_id=api_key_id,
+                    account_id=account_id,
+                    is_openai_account=is_openai_account,
+                )
+            )
+        else:
+            row.account_id = account_id
+            row.is_openai_account = is_openai_account
+            row.updated_at = utcnow()
+        await self._session.commit()
+
     async def update(
         self,
         key_id: str,
@@ -366,6 +389,7 @@ class ApiKeysRepository:
         transport_policy_override: str | None | _Unset = _UNSET,
         thread_cache_identity_override: str | None | _Unset = _UNSET,
         usage_sections: str | _Unset = _UNSET,
+        namespace_planning_enabled: bool | _Unset = _UNSET,
         account_assignment_scope_enabled: bool | _Unset = _UNSET,
         source_assignment_scope_enabled: bool | _Unset = _UNSET,
         expires_at: datetime | None | _Unset = _UNSET,
@@ -410,6 +434,9 @@ class ApiKeysRepository:
         if usage_sections is not _UNSET:
             assert isinstance(usage_sections, str)
             row.usage_sections = usage_sections
+        if namespace_planning_enabled is not _UNSET:
+            assert isinstance(namespace_planning_enabled, bool)
+            row.namespace_planning_enabled = namespace_planning_enabled
         if account_assignment_scope_enabled is not _UNSET:
             assert isinstance(account_assignment_scope_enabled, bool)
             row.account_assignment_scope_enabled = account_assignment_scope_enabled

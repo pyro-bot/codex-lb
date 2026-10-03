@@ -270,6 +270,14 @@ class AccountPoolUsageResponse(BaseModel):
     secondary: float | None = None
 
 
+class AccountCreditUsageResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_id: str
+    display_name: str
+    limits: list[V1UsageLimitResponse] = []
+
+
 class V1UsageResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -280,6 +288,7 @@ class V1UsageResponse(BaseModel):
     limits: list[V1UsageLimitResponse]
     upstream_limits: list[V1UsageLimitResponse] = []
     account_pool_usage: AccountPoolUsageResponse | None = None
+    account_credits: list[AccountCreditUsageResponse] = []
 
 
 class V1ResetCreditEntry(BaseModel):

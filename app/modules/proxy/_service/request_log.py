@@ -533,6 +533,12 @@ class _RequestLogMixin:
                     conversation_id=conversation_id,
                     client_ip=client_ip,
                 )
+                if api_key_id is not None and status == "success":
+                    await repos.api_keys.upsert_route_cursor(
+                        api_key_id,
+                        account_id=account_id,
+                        is_openai_account=account_id is not None,
+                    )
         except Exception:
             logger.warning(
                 "Failed to persist request log account_id=%s request_id=%s",

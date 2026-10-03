@@ -1766,6 +1766,18 @@ class ProxyService(
             if api_key is not None and api_key.account_assignment_scope_enabled
             else None
         )
+        if api_key is not None and api_key.namespace_account_required:
+            namespace_account_id = api_key.namespace_account_id
+            if namespace_account_id is None:
+                raise ValueError("namespace planning requires an account id")
+            if preferred_account_id is not None and preferred_account_id != namespace_account_id:
+                return AccountSelection(
+                    account=None,
+                    error_message="Namespace account conflicts with request continuity owner",
+                    error_code="namespace_account_conflict",
+                )
+            preferred_account_id = namespace_account_id
+            fallback_on_preferred_account_unavailable = False
         effective_traffic_class = (
             TRAFFIC_CLASS_OPPORTUNISTIC
             if api_key is not None and api_key.traffic_class == TRAFFIC_CLASS_OPPORTUNISTIC

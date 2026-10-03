@@ -95,6 +95,10 @@ class Account(Base):
     )
     email: Mapped[str] = mapped_column(String, nullable=False)
     alias: Mapped[str | None] = mapped_column(String, nullable=True)
+    # A unique, operator-owned route label used by namespace planning, e.g.
+    # ``personal`` in ``[personal] gpt-6-sol``.  It is deliberately distinct
+    # from ``alias``: aliases are presentation-only and may be duplicated.
+    routing_name: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
     workspace_id: Mapped[str | None] = mapped_column(String, nullable=True)
     workspace_label: Mapped[str | None] = mapped_column(String, nullable=True)
     seat_type: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -1772,6 +1776,12 @@ class ApiKey(Base):
         server_default=false(),
         nullable=False,
     )
+    namespace_planning_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=false(),
+        nullable=False,
+    )
     usage_sections: Mapped[str | None] = mapped_column(
         Text,
         nullable=False,
@@ -1816,6 +1826,47 @@ class ApiKey(Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+    route_cursor: Mapped["ApiKeyRouteCursor | None"] = relationship(
+        "ApiKeyRouteCursor",
+        back_populates="api_key",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class ApiKeyRouteCursor(Base):
+    """Last successful provider class and account used by one API key.
+
+    Service-model planning needs to distinguish a prior OpenAI route from a
+    successful model-source route.  Persisting that distinction avoids a
+    process-local "last account" silently changing after a replica restart.
+    """
+
+    __tablename__ = "api_key_route_cursors"
+
+    api_key_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("api_keys.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    account_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("accounts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    is_openai_account: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+    api_key: Mapped["ApiKey"] = relationship("ApiKey", back_populates="route_cursor")
+
+
+class ServiceModel(Base):
+    """Exact public model IDs that use the namespace-planning fallback lane."""
+
+    __tablename__ = "service_models"
+
+    model: Mapped[str] = mapped_column(String(255), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
 
 
 class ApiKeyAccountAssignment(Base):

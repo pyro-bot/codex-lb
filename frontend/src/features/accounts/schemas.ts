@@ -70,6 +70,7 @@ export const AccountSummarySchema = z.object({
   chatgptAccountId: z.string().nullable().optional(),
   email: z.string(),
   alias: z.string().nullable().optional(),
+  routingName: z.string().nullable().optional(),
   displayName: z.string(),
   workspaceId: z.string().nullable().optional(),
   workspaceLabel: z.string().nullable().optional(),
@@ -243,6 +244,19 @@ export const AccountAliasRequestSchema = z.object({
 export const AccountAliasResponseSchema = z.object({
   accountId: z.string(),
   alias: z.string().nullable(),
+});
+
+export const AccountRoutingNameRequestSchema = z.object({
+  routingName: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/).max(64).nullable(),
+});
+
+export const AccountRoutingNameResponseSchema = z.object({
+  accountId: z.string(),
+  routingName: z.string().nullable(),
+});
+
+export const ServiceModelsResponseSchema = z.object({
+  models: z.array(z.string()),
 });
 
 export const AccountLimitWarmupUpdateRequestSchema = z.object({

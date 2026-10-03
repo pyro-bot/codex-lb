@@ -29,9 +29,11 @@ from app.db.models import (
     Account,
     AccountStatus,
     ApiKeyLimit,
+    ApiKeyRouteCursor,
     ApiKeyUsageReservation,
     LimitWindow,
     RequestLog,
+    ServiceModel,
     UsageHistory,
 )
 from app.db.session import SessionLocal
@@ -367,6 +369,133 @@ async def test_api_key_create_persists_assigned_account_ids(async_client):
     assert listed.status_code == 200
     assert listed.json()[0]["accountAssignmentScopeEnabled"] is True
     assert listed.json()[0]["assignedAccountIds"] == [first_account_id, second_account_id]
+
+
+@pytest.mark.asyncio
+async def test_namespace_planning_resolves_named_accounts_and_service_model_fallback(async_client):
+    now = utcnow()
+    async with SessionLocal() as session:
+        session.add_all(
+            [
+                Account(
+                    id="namespace-personal",
+                    email="namespace-personal@example.com",
+                    routing_name="personal",
+                    plan_type="plus",
+                    access_token_encrypted=b"a",
+                    refresh_token_encrypted=b"b",
+                    id_token_encrypted=b"c",
+                    last_refresh=now,
+                    status=AccountStatus.ACTIVE,
+                ),
+                Account(
+                    id="namespace-corp",
+                    email="namespace-corp@example.com",
+                    routing_name="corp",
+                    plan_type="pro",
+                    access_token_encrypted=b"d",
+                    refresh_token_encrypted=b"e",
+                    id_token_encrypted=b"f",
+                    last_refresh=now,
+                    status=AccountStatus.ACTIVE,
+                ),
+                # `personal` has the lower used percentage, but `corp` has
+                # the larger remaining credit balance because it is a Pro plan.
+                UsageHistory(
+                    account_id="namespace-personal",
+                    recorded_at=now,
+                    window="primary",
+                    used_percent=0.0,
+                    reset_at=int((now + timedelta(hours=4)).timestamp()),
+                    window_minutes=300,
+                ),
+                UsageHistory(
+                    account_id="namespace-corp",
+                    recorded_at=now,
+                    window="primary",
+                    used_percent=80.0,
+                    reset_at=int((now + timedelta(hours=4)).timestamp()),
+                    window_minutes=300,
+                ),
+                ServiceModel(model="gpt-reserve"),
+            ]
+        )
+        service = ApiKeysService(ApiKeysRepository(session))
+        created = await service.create_key(
+            ApiKeyCreateData(
+                name="namespace-key",
+                allowed_models=None,
+                namespace_planning_enabled=True,
+                assigned_account_ids=["namespace-personal", "namespace-corp"],
+            )
+        )
+        session.add(
+            ApiKeyRouteCursor(
+                api_key_id=created.id,
+                account_id=None,
+                is_openai_account=False,
+            )
+        )
+        await session.commit()
+        api_key = await service.validate_key(created.key)
+
+    named_key, normalized_model, named_pinned = await proxy_api._resolve_namespace_planning_model(
+        api_key,
+        "[personal] model-alpha",
+    )
+    assert named_pinned is True
+    assert normalized_model == "model-alpha"
+    assert named_key is not None
+    assert named_key.namespace_account_id == "namespace-personal"
+    assert named_key.namespace_account_required is True
+
+    service_key, service_model, service_pinned = await proxy_api._resolve_namespace_planning_model(
+        api_key,
+        "gpt-reserve",
+    )
+    assert service_pinned is True
+    assert service_model == "gpt-reserve"
+    assert service_key is not None
+    assert service_key.namespace_account_id == "namespace-corp"
+
+
+@pytest.mark.asyncio
+async def test_namespace_catalog_lists_eligible_named_models_but_not_service_models(async_client):
+    await _populate_test_registry()
+    account_id = await _import_account(async_client, "namespace-catalog", "namespace-catalog@example.com")
+    named = await async_client.put(
+        f"/api/accounts/{account_id}/routing-name",
+        json={"routingName": "personal"},
+    )
+    assert named.status_code == 200
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "namespace-catalog-key",
+            "namespacePlanningEnabled": True,
+            "assignedAccountIds": [account_id],
+        },
+    )
+    assert created.status_code == 200
+    key = created.json()["key"]
+    settings = await async_client.put("/api/settings", json={"apiKeyAuthEnabled": True})
+    assert settings.status_code == 200
+
+    initial_models = await async_client.get("/v1/models", headers={"Authorization": f"Bearer {key}"})
+    assert initial_models.status_code == 200
+    initial_ids = {model["id"] for model in initial_models.json()["data"]}
+    assert "[personal] model-alpha" in initial_ids
+
+    service_models = await async_client.put(
+        "/api/accounts/service-models",
+        json={"models": ["model-alpha"]},
+    )
+    assert service_models.status_code == 200
+    updated_models = await async_client.get("/v1/models", headers={"Authorization": f"Bearer {key}"})
+    assert updated_models.status_code == 200
+    updated_ids = {model["id"] for model in updated_models.json()["data"]}
+    assert "model-alpha" in updated_ids
+    assert "[personal] model-alpha" not in updated_ids
 
 
 @pytest.mark.asyncio

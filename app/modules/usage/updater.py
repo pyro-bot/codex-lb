@@ -650,7 +650,19 @@ class UsageUpdater:
                 return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
 
         if payload is None:
+            logger.warning(
+                "Usage refresh returned no payload account_id=%s request_id=%s",
+                account.id,
+                get_request_id(),
+            )
             return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
+
+        if payload.rate_limit is None and not payload.additional_rate_limits:
+            logger.warning(
+                "Usage refresh payload contains no quota windows account_id=%s request_id=%s",
+                account.id,
+                get_request_id(),
+            )
 
         if await _payload_mismatches_account_slot(account, payload):
             logger.warning(

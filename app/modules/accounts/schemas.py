@@ -84,6 +84,7 @@ class AccountSummary(DashboardModel):
     chatgpt_account_id: str | None = None
     email: str
     alias: str | None = None
+    routing_name: str | None = None
     display_name: str
     workspace_id: str | None = None
     workspace_label: str | None = None
@@ -306,3 +307,20 @@ class AccountAliasRequest(DashboardModel):
 class AccountAliasResponse(DashboardModel):
     account_id: str
     alias: str | None = None
+
+
+class AccountRoutingNameRequest(DashboardModel):
+    routing_name: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+
+
+class AccountRoutingNameResponse(DashboardModel):
+    account_id: str
+    routing_name: str | None = None
+
+
+class ServiceModelsRequest(DashboardModel):
+    models: list[str] = Field(default_factory=list)
+
+
+class ServiceModelsResponse(DashboardModel):
+    models: list[str] = Field(default_factory=list)

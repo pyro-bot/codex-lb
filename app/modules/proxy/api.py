@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import math
+import re
 import time
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
@@ -30,6 +31,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 from starlette.convertors import Convertor, register_url_convertor
 from starlette.datastructures import Headers
 from starlette.websockets import WebSocketState
@@ -162,6 +164,7 @@ from app.core.openai.requests import (
     strip_replayed_tool_call_namespaces_from_payload,
 )
 from app.core.openai.v1_requests import V1ResponsesCompactRequest, V1ResponsesRequest
+from app.core.plan_types import account_plan_matches_allowed
 from app.core.request_locality import (
     FORWARDED_CHAIN_HEADER_NAMES,
     parse_trusted_proxy_networks,
@@ -192,7 +195,7 @@ from app.core.utils.sse import (
     inject_sse_keepalives,
     parse_sse_data_json,
 )
-from app.db.models import Account, AccountStatus, ModelSource
+from app.db.models import Account, AccountStatus, ApiKeyRouteCursor, ModelSource, ServiceModel
 from app.db.session import detach_session_objects, get_background_session
 from app.dependencies import ProxyContext, get_proxy_context, get_proxy_websocket_context
 from app.modules.accounts.auth_manager import AuthManager
@@ -310,6 +313,7 @@ from app.modules.proxy.request_policy import (
     validate_top_level_compaction_trigger_input_shape,
 )
 from app.modules.proxy.schemas import (
+    AccountCreditUsageResponse,
     AccountPoolUsageResponse,
     CodexModelEntry,
     CodexModelsResponse,
@@ -1165,6 +1169,12 @@ async def responses(
         return _logged_error_json_response(request, 400, error)
 
     backend_non_streaming_requested = responses_payload.stream is False
+    try:
+        api_key, responses_payload.model, namespace_account_pinned = await _resolve_namespace_planning_model(
+            api_key, responses_payload.model
+        )
+    except NamespacePlanningError as exc:
+        return _logged_error_json_response(request, 400, openai_error("invalid_request_error", str(exc)))
     raw_source_model = _effective_optional_model_for_api_key(api_key, responses_payload.model)
     (
         prohibit_fast_mode,
@@ -1185,7 +1195,7 @@ async def responses(
     try:
         source_selection, continuity_suppressed = (
             (None, False)
-            if source_route_excluded
+            if source_route_excluded or namespace_account_pinned
             else await _select_responses_model_source_with_continuity(
                 request,
                 responses_payload,
@@ -1200,7 +1210,7 @@ async def responses(
     source = source_selection[0] if source_selection is not None else None
     if source_selection is not None:
         responses_payload.model = source_selection[1]
-    elif not source_route_excluded and not continuity_suppressed:
+    elif not source_route_excluded and not continuity_suppressed and not namespace_account_pinned:
         # The ordinary lookup itself missed (continuity suppression means an
         # enabled source claimed the model, so the disabled probe must not
         # override the recorded subscription anchor).
@@ -1370,6 +1380,12 @@ async def v1_responses(
     except ValidationError as exc:
         error = openai_validation_error(exc)
         return _logged_error_json_response(request, 400, error)
+    try:
+        api_key, responses_payload.model, namespace_account_pinned = await _resolve_namespace_planning_model(
+            api_key, responses_payload.model
+        )
+    except NamespacePlanningError as exc:
+        return _logged_error_json_response(request, 400, openai_error("invalid_request_error", str(exc)))
     raw_source_model = _effective_optional_model_for_api_key(api_key, responses_payload.model)
     (
         prohibit_fast_mode,
@@ -1394,7 +1410,7 @@ async def v1_responses(
     try:
         source_selection, continuity_suppressed = (
             (None, False)
-            if source_route_excluded
+            if source_route_excluded or namespace_account_pinned
             else await _select_responses_model_source_with_continuity(
                 request,
                 responses_payload,
@@ -1409,7 +1425,7 @@ async def v1_responses(
     source = source_selection[0] if source_selection is not None else None
     if source_selection is not None:
         responses_payload.model = source_selection[1]
-    elif not source_route_excluded and not continuity_suppressed:
+    elif not source_route_excluded and not continuity_suppressed and not namespace_account_pinned:
         # The ordinary lookup itself missed (continuity suppression means an
         # enabled source claimed the model, so the disabled probe must not
         # override the recorded subscription anchor).
@@ -1744,6 +1760,15 @@ async def v1_usage(
             if "account_pool_usage" in usage_sections and not hide_upstream_limits
             else None
         )
+        account_credits = (
+            await _build_account_credit_usage(
+                session,
+                assigned_account_ids=api_key.assigned_account_ids,
+                account_assignment_scope_enabled=api_key.account_assignment_scope_enabled,
+            )
+            if "account_credits" in usage_sections and not hide_upstream_limits
+            else []
+        )
 
     if usage is None:
         raise ProxyAuthError("Invalid API key")
@@ -1751,7 +1776,7 @@ async def v1_usage(
     own_limits = [_to_v1_usage_limit_response(limit) for limit in usage.limits]
     upstream_limits = [] if hide_upstream_limits else _ordered_aggregate_limits(aggregate_limits)
 
-    return V1UsageResponse(
+    response = V1UsageResponse(
         request_count=usage.request_count,
         total_tokens=usage.total_tokens,
         cached_input_tokens=usage.cached_input_tokens,
@@ -1759,7 +1784,13 @@ async def v1_usage(
         limits=own_limits or upstream_limits,
         upstream_limits=upstream_limits,
         account_pool_usage=account_pool_usage,
+        account_credits=account_credits,
     )
+    if "account_credits" not in usage_sections:
+        content = response.model_dump(mode="json")
+        content.pop("account_credits", None)
+        return JSONResponse(content=content)
+    return response
 
 
 def _is_reset_credit_selectable_account(account: Account) -> bool:
@@ -2151,6 +2182,103 @@ def _parse_usage_sections(raw: str) -> set[str]:
     return {s.strip() for s in raw.split(",") if s.strip()}
 
 
+_NAMESPACE_MODEL_RE = re.compile(r"^\[([a-z0-9][a-z0-9_-]*)\]\s+(.+)$")
+
+
+class NamespacePlanningError(ValueError):
+    pass
+
+
+async def _resolve_namespace_planning_model(
+    api_key: ApiKeyData | None,
+    model: str,
+) -> tuple[ApiKeyData | None, str, bool]:
+    """Resolve a virtual name to its upstream model and hard account pin.
+
+    The returned boolean means the model must remain on the subscription
+    account path and must not be dispatched to a model source.
+    """
+    if api_key is None or not api_key.namespace_planning_enabled:
+        return api_key, model, False
+    match = _NAMESPACE_MODEL_RE.fullmatch(model)
+    async with get_background_session() as session:
+        if match is not None:
+            routing_name, upstream_model = match.groups()
+            account = await session.scalar(select(Account).where(Account.routing_name == routing_name))
+            if account is None or account.status in (AccountStatus.DEACTIVATED, AccountStatus.PAUSED):
+                raise NamespacePlanningError(f"Named account '{routing_name}' is unavailable")
+            if api_key.account_assignment_scope_enabled and account.id not in api_key.assigned_account_ids:
+                raise NamespacePlanningError(f"Named account '{routing_name}' is outside this API key scope")
+            return (
+                replace(api_key, namespace_account_id=account.id, namespace_account_required=True),
+                upstream_model.strip(),
+                True,
+            )
+
+        service_model = await session.get(ServiceModel, model)
+        # Unqualified OpenAI catalog names deliberately follow the most recently
+        # used named account.  Models supplied by a Model provider do not occur
+        # in this catalog and remain eligible for the normal source router.
+        is_openai_catalog_model = model in get_model_registry().get_models_with_fallback()
+        if service_model is None and not is_openai_catalog_model:
+            return api_key, model, False
+        cursor = await session.get(ApiKeyRouteCursor, api_key.id)
+        candidate_id = cursor.account_id if cursor is not None and cursor.is_openai_account else None
+        accounts = (
+            await ApiKeysRepository(session).list_accounts_by_ids(api_key.assigned_account_ids)
+            if api_key.account_assignment_scope_enabled
+            else await ApiKeysRepository(session).list_all_accounts()
+        )
+        eligible = [
+            account
+            for account in accounts
+            if account.routing_name is not None and account.status not in (AccountStatus.DEACTIVATED, AccountStatus.PAUSED)
+        ]
+        if candidate_id is not None:
+            remembered = next((account for account in eligible if account.id == candidate_id), None)
+            # A service model follows the last named account (``[personal]`` /
+            # ``[corp]``), not an unrelated ordinary subscription request. If
+            # that account was removed or left this API key's scope, fall back
+            # to the greatest usable quota just as we do after a non-OpenAI
+            # provider route.
+            if remembered is not None and remembered.routing_name is not None:
+                return (
+                    replace(api_key, namespace_account_id=remembered.id, namespace_account_required=True),
+                    model,
+                    True,
+                )
+        if not eligible:
+            raise NamespacePlanningError("No eligible named OpenAI account is available for this model")
+        usage = await UsageRepository(session).latest_by_account(
+            "primary", account_ids=[account.id for account in eligible]
+        )
+
+        # A percent alone is not a quota: plans have different capacities.
+        # Rank by actual remaining credits so the fallback honours the account
+        # with the greatest limit available to this API key. A missing snapshot
+        # deliberately ranks last rather than pretending it has unlimited
+        # capacity.
+        def remaining_primary_credits(account: Account) -> float:
+            entry = usage.get(account.id)
+            if entry is None or entry.reset_at is None:
+                return -1.0
+            summary = usage_core.summarize_usage_window(
+                [usage_history_to_window_row(entry)],
+                {account.id: account},
+                "primary",
+            )
+            return max(0.0, (summary.capacity_credits or 0.0) - (summary.used_credits or 0.0))
+
+        selected = min(
+            eligible,
+            key=lambda account: (
+                -remaining_primary_credits(account),
+                account.id,
+            ),
+        )
+        return replace(api_key, namespace_account_id=selected.id, namespace_account_required=True), model, True
+
+
 async def _build_account_pool_usage(
     session: AsyncSession,
     *,
@@ -2467,6 +2595,76 @@ def _attach_codex_usage_reset_credits(
     if reset_credits is None:
         return payload
     return replace(payload, rate_limit_reset_credits=reset_credits)
+
+
+async def _build_account_credit_usage(
+    session: AsyncSession,
+    *,
+    assigned_account_ids: list[str],
+    account_assignment_scope_enabled: bool,
+) -> list[AccountCreditUsageResponse]:
+    """Return stored upstream quota windows per API-key-visible account.
+
+    Values are account telemetry: a capacity of N OpenAI credits is N
+    codex-lb credits, and consumption is derived from the latest upstream
+    `used_percent` snapshot.  This intentionally does not claim per-key
+    attribution when keys share an account.
+    """
+    query = (
+        select(Account)
+        .options(load_only(Account.id, Account.alias, Account.email, Account.plan_type, Account.status))
+        .where(Account.delete_requested_at.is_(None))
+        .where(Account.status.notin_((AccountStatus.DEACTIVATED, AccountStatus.PAUSED)))
+    )
+    if account_assignment_scope_enabled:
+        query = query.where(Account.id.in_(assigned_account_ids))
+    accounts = list((await session.execute(query.order_by(Account.id))).scalars().all())
+    if not accounts:
+        return []
+    account_ids = [account.id for account in accounts]
+    usage_repository = UsageRepository(session)
+    latest_by_window = {
+        "5h": await usage_repository.latest_by_account("primary", account_ids=account_ids),
+        "7d": await usage_repository.latest_by_account("secondary", account_ids=account_ids),
+        "monthly": await usage_repository.latest_by_account("monthly", account_ids=account_ids),
+    }
+    window_name = {"5h": "primary", "7d": "secondary", "monthly": "monthly"}
+    records: list[AccountCreditUsageResponse] = []
+    for account in accounts:
+        limits: list[V1UsageLimitResponse] = []
+        for label, entries in latest_by_window.items():
+            entry = entries.get(account.id)
+            if entry is None or entry.reset_at is None:
+                continue
+            summary = usage_core.summarize_usage_window(
+                [usage_history_to_window_row(entry)],
+                {account.id: account},
+                window_name[label],
+            )
+            capacity = max(0, int(round(summary.capacity_credits or 0.0)))
+            if capacity == 0:
+                continue
+            current = max(0, min(int(round(summary.used_credits or 0.0)), capacity))
+            limits.append(
+                V1UsageLimitResponse(
+                    limit_type="credits",
+                    limit_window=label,
+                    max_value=capacity,
+                    current_value=current,
+                    remaining_value=capacity - current,
+                    model_filter=None,
+                    reset_at=datetime.fromtimestamp(entry.reset_at, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+                    source="account_credits",
+                )
+            )
+        records.append(
+            AccountCreditUsageResponse(
+                account_id=account.id,
+                display_name=account.alias or account.email,
+                limits=limits,
+            )
+        )
+    return records
 
 
 async def _build_aggregate_credit_limits(session: AsyncSession) -> dict[str, V1UsageLimitResponse]:
@@ -3847,6 +4045,48 @@ async def _proxy_images_edit_request(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _NamespaceCatalogAccount:
+    id: str
+    routing_name: str
+    plan_type: str
+
+
+async def _namespace_catalog_context(api_key: ApiKeyData | None) -> tuple[list[_NamespaceCatalogAccount], set[str]]:
+    if api_key is None or not api_key.namespace_planning_enabled:
+        return [], set()
+    async with get_background_session() as session:
+        query = select(Account.id, Account.routing_name, Account.plan_type).where(
+            Account.routing_name.is_not(None),
+            Account.status.notin_((AccountStatus.DEACTIVATED, AccountStatus.PAUSED)),
+        )
+        if api_key.account_assignment_scope_enabled:
+            query = query.where(Account.id.in_(api_key.assigned_account_ids))
+        account_rows = (await session.execute(query.order_by(Account.routing_name))).all()
+        service_models = set((await session.execute(select(ServiceModel.model))).scalars().all())
+    accounts = [
+        _NamespaceCatalogAccount(id=account_id, routing_name=routing_name, plan_type=plan_type)
+        for account_id, routing_name, plan_type in account_rows
+        if routing_name is not None
+    ]
+    return accounts, service_models
+
+
+def _namespace_account_supports_catalog_model(account: _NamespaceCatalogAccount, model: UpstreamModel) -> bool:
+    """Keep virtual entries truthful for account-specific model catalogues."""
+    registry = get_model_registry()
+    snapshot = registry.get_snapshot()
+    account_catalogue_is_authoritative = snapshot is not None and account.id in snapshot.account_plans
+    if account_catalogue_is_authoritative:
+        account_ids_for_model = registry.account_ids_for_model(model.slug)
+        if account_ids_for_model is not None:
+            return account.id in account_ids_for_model
+    allowed_plans = registry.plan_types_for_model(model.slug)
+    if allowed_plans is not None:
+        return account_plan_matches_allowed(account.plan_type, allowed_plans)
+    return True
+
+
 async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
     reservation = await _enforce_request_limits(
         api_key,
@@ -3906,6 +4146,8 @@ async def _build_codex_models_response_body(
         )
         == "list"
     }
+    namespace_accounts, service_models = await _namespace_catalog_context(api_key)
+    namespace_service_models = service_models
 
     if not models and not metadata_models and not source_models:
         return JSONResponse(content=CodexModelsResponse(models=[], data=[]).model_dump(mode="json"))
@@ -3994,6 +4236,30 @@ async def _build_codex_models_response_body(
                     context_window_overrides=context_window_overrides,
                 )
             )
+    for account in namespace_accounts:
+        for slug, model in models.items():
+            if (
+                slug in namespace_service_models
+                or not _is_codex_backend_catalog_model(model)
+                or not _namespace_account_supports_catalog_model(account, model)
+            ):
+                continue
+            if allowed_models is not None and slug not in allowed_models:
+                continue
+            virtual_slug = f"[{account.routing_name}] {slug}"
+            entry = _to_codex_model_entry(model, context_window_overrides=context_window_overrides).model_copy(
+                update={"slug": virtual_slug, "display_name": virtual_slug}
+            )
+            entries.append(entry)
+            if model.supported_in_api and entry.visibility == "list":
+                data.append(
+                    _to_model_list_item(
+                        virtual_slug,
+                        model,
+                        created=_model_list_created_at(model),
+                        context_window_overrides=context_window_overrides,
+                    )
+                )
     return JSONResponse(content=CodexModelsResponse(models=entries, data=data).model_dump(mode="json"))
 
 
@@ -4022,6 +4288,8 @@ async def _build_models_response_body(
     registry = get_model_registry()
     models = registry.get_models_with_fallback()
     source_models = await _list_enabled_source_catalog_models(api_key)
+    namespace_accounts, service_models = await _namespace_catalog_context(api_key)
+    namespace_service_models = service_models
 
     if not models and not source_models:
         return JSONResponse(content=_dump_v1_models_response(ModelListResponse(data=[])))
@@ -4047,6 +4315,23 @@ async def _build_models_response_body(
             _to_model_list_item(model.slug, model, created=created, context_window_overrides=context_window_overrides)
         )
         seen_slugs.add(model.slug)
+    for account in namespace_accounts:
+        for slug, model in models.items():
+            if (
+                slug in namespace_service_models
+                or not is_public_model(model, allowed_models)
+                or not _namespace_account_supports_catalog_model(account, model)
+            ):
+                continue
+            virtual_slug = f"[{account.routing_name}] {slug}"
+            items.append(
+                _to_model_list_item(
+                    virtual_slug,
+                    model,
+                    created=created,
+                    context_window_overrides=context_window_overrides,
+                )
+            )
     return JSONResponse(content=_dump_v1_models_response(ModelListResponse(data=items)))
 
 
@@ -4428,6 +4713,12 @@ async def v1_chat_completions(
     if capability_transport_denial is not None:
         return capability_transport_denial
     cursor_compat_client = _is_cursor_compat_client(request, api_key)
+    try:
+        api_key, payload.model, namespace_account_pinned = await _resolve_namespace_planning_model(
+            api_key, payload.model
+        )
+    except NamespacePlanningError as exc:
+        return _logged_error_json_response(request, 400, openai_error("invalid_request_error", str(exc)))
     effective_model = _effective_model_for_api_key(api_key, payload.model)
 
     rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
@@ -4467,7 +4758,9 @@ async def v1_chat_completions(
     if prohibit_fast_mode and _is_fast_mode_model_alias(effective_model):
         effective_model = responses_payload.model
     validate_model_access(api_key, responses_payload.model)
-    source_route_attempted = not responses_shaped_payload and payload.messages is not None
+    source_route_attempted = (
+        not namespace_account_pinned and not responses_shaped_payload and payload.messages is not None
+    )
     source_selection = (
         await _select_chat_model_source(
             responses_payload.model,
@@ -7015,6 +7308,12 @@ async def _compact_responses(
     openai_cache_affinity: bool = False,
     prohibit_fast_mode: bool = False,
 ) -> JSONResponse:
+    try:
+        api_key, payload.model, _namespace_account_pinned = await _resolve_namespace_planning_model(
+            api_key, payload.model
+        )
+    except NamespacePlanningError as exc:
+        return _logged_error_json_response(request, 400, openai_error("invalid_request_error", str(exc)))
     # The replaced effort is discarded: this path is subscription-only, so the
     # rewrite that works around the backend hang must stick.
     service_tier_was_enforced = apply_api_key_enforcement(

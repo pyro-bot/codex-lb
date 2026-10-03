@@ -69,6 +69,7 @@ type ApiKeyCreateDraft = {
   selectedSourceIds: string[];
   selectedReasoningEfforts: ReasoningEffortType[];
   usageSections: string;
+  namespacePlanningEnabled: boolean;
   limitRules: LimitRuleCreate[];
   expiresAt: Date | null;
   enforcedModel: string;
@@ -85,6 +86,7 @@ const initialApiKeyCreateDraft: ApiKeyCreateDraft = {
   selectedSourceIds: [],
   selectedReasoningEfforts: [],
   usageSections: "upstream_limits,account_pool_usage",
+  namespacePlanningEnabled: false,
   limitRules: [],
   expiresAt: null,
   enforcedModel: "",
@@ -123,6 +125,7 @@ function ApiKeyCreateForm({ busy, onClose, onSubmit }: ApiKeyCreateFormProps) {
       ...(draft.selectedAccountIds.length > 0 ? { assignedAccountIds: draft.selectedAccountIds } : {}),
       ...(draft.selectedSourceIds.length > 0 ? { assignedSourceIds: draft.selectedSourceIds } : {}),
       usageSections: draft.usageSections,
+      namespacePlanningEnabled: draft.namespacePlanningEnabled,
       enforcedModel: draft.enforcedModel.trim() ? draft.enforcedModel.trim() : null,
       enforcedReasoningEffort:
         draft.enforcedReasoningEffort === "none"
@@ -204,6 +207,17 @@ function ApiKeyCreateForm({ busy, onClose, onSubmit }: ApiKeyCreateFormProps) {
             <div className="space-y-1">
               <label className="text-sm font-medium">{t("apiKeys.form.usageSections")}</label>
               <UsageSectionsMultiSelect value={draft.usageSections} onChange={(usageSections) => updateDraft({ usageSections })} />
+            </div>
+
+            <div className="flex items-center gap-2 rounded-md border p-2 text-sm">
+              <Checkbox
+                id="create-api-key-namespace-planning"
+                checked={draft.namespacePlanningEnabled}
+                onCheckedChange={(checked) => updateDraft({ namespacePlanningEnabled: checked === true })}
+              />
+              <label htmlFor="create-api-key-namespace-planning" className="cursor-pointer">
+                {t("apiKeys.form.namespacePlanning")}
+              </label>
             </div>
 
             <div className="space-y-1">

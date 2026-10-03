@@ -658,6 +658,63 @@ async def test_set_and_clear_account_alias(async_client):
 
 
 @pytest.mark.asyncio
+async def test_admin_manages_unique_account_routing_names_and_service_models(async_client):
+    encryptor = TokenEncryptor()
+    now = datetime.now()
+    async with SessionLocal() as session:
+        session.add_all(
+            [
+                Account(
+                    id="routing-account-a",
+                    email="routing-a@example.com",
+                    plan_type="plus",
+                    access_token_encrypted=encryptor.encrypt("access-a"),
+                    refresh_token_encrypted=encryptor.encrypt("refresh-a"),
+                    id_token_encrypted=encryptor.encrypt("id-a"),
+                    last_refresh=now,
+                    status=AccountStatus.ACTIVE,
+                ),
+                Account(
+                    id="routing-account-b",
+                    email="routing-b@example.com",
+                    plan_type="plus",
+                    access_token_encrypted=encryptor.encrypt("access-b"),
+                    refresh_token_encrypted=encryptor.encrypt("refresh-b"),
+                    id_token_encrypted=encryptor.encrypt("id-b"),
+                    last_refresh=now,
+                    status=AccountStatus.ACTIVE,
+                ),
+            ]
+        )
+        await session.commit()
+
+    named = await async_client.put(
+        "/api/accounts/routing-account-a/routing-name",
+        json={"routingName": "personal"},
+    )
+    assert named.status_code == 200
+    assert named.json() == {"accountId": "routing-account-a", "routingName": "personal"}
+
+    duplicate = await async_client.put(
+        "/api/accounts/routing-account-b/routing-name",
+        json={"routingName": "personal"},
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "account_routing_name_conflict"
+
+    configured = await async_client.put(
+        "/api/accounts/service-models",
+        json={"models": ["gpt-reserve", "gpt-reserve", " gpt-fallback "]},
+    )
+    assert configured.status_code == 200
+    assert configured.json() == {"models": ["gpt-fallback", "gpt-reserve"]}
+
+    listed = await async_client.get("/api/accounts/service-models")
+    assert listed.status_code == 200
+    assert listed.json() == {"models": ["gpt-fallback", "gpt-reserve"]}
+
+
+@pytest.mark.asyncio
 async def test_list_accounts_flags_email_duplicates(async_client):
     """Pin codex-lb #787 (B): after a token-invalidation cascade, the
     re-add OAuth flow creates a second account row with the same email

@@ -97,6 +97,7 @@ type ApiKeyEditDraft = {
   selectedReasoningEfforts: ReasoningEffortType[];
   clearSourceScope: boolean;
   usageSections: string;
+  namespacePlanningEnabled: boolean;
   limitRules: LimitRuleCreate[];
   expiresAt: Date | null;
   applyToCodexModel: boolean;
@@ -115,6 +116,7 @@ function createApiKeyEditDraft(apiKey: ApiKey): ApiKeyEditDraft {
     selectedReasoningEfforts: apiKey.allowedReasoningEfforts || [],
     clearSourceScope: false,
     usageSections: apiKey.usageSections,
+    namespacePlanningEnabled: apiKey.namespacePlanningEnabled,
     limitRules: limitsToCreateRules(apiKey),
     expiresAt: parseDate(apiKey.expiresAt),
     applyToCodexModel: apiKey.applyToCodexModel,
@@ -179,6 +181,7 @@ function ApiKeyEditForm({ apiKey, busy, onSubmit, onClose }: ApiKeyEditFormProps
       trafficClass: draft.trafficClass,
       transportPolicyOverride: draft.transportPolicyOverride,
       usageSections: draft.usageSections,
+      namespacePlanningEnabled: draft.namespacePlanningEnabled,
       expiresAt: draft.expiresAt?.toISOString() ?? null,
       isActive: values.isActive,
     };
@@ -272,6 +275,17 @@ function ApiKeyEditForm({ apiKey, busy, onSubmit, onClose }: ApiKeyEditFormProps
             <div className="space-y-1">
               <div className="text-sm font-medium">{t("apiKeys.form.usageSections")}</div>
               <UsageSectionsMultiSelect value={draft.usageSections} onChange={(usageSections) => updateDraft({ usageSections })} />
+            </div>
+
+            <div className="flex items-center gap-2 rounded-md border p-2 text-sm">
+              <Checkbox
+                id="edit-api-key-namespace-planning"
+                checked={draft.namespacePlanningEnabled}
+                onCheckedChange={(checked) => updateDraft({ namespacePlanningEnabled: checked === true })}
+              />
+              <label htmlFor="edit-api-key-namespace-planning" className="cursor-pointer">
+                {t("apiKeys.form.namespacePlanning")}
+              </label>
             </div>
 
             <div className="space-y-1">

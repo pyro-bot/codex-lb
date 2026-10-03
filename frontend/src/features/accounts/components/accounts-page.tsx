@@ -8,6 +8,7 @@ import { LoadingOverlay } from "@/components/layout/loading-overlay";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useDialogState } from "@/hooks/use-dialog-state";
 import { AccountDetail } from "@/features/accounts/components/account-detail";
+import { ServiceModelsEditor } from "@/features/accounts/components/service-models-editor";
 import { AccountList } from "@/features/accounts/components/account-list";
 import { AccountsSkeleton } from "@/features/accounts/components/accounts-skeleton";
 import { ImportDialog } from "@/features/accounts/components/import-dialog";
@@ -16,6 +17,7 @@ import { AuthExportDialog } from "@/features/accounts/components/auth-export-dia
 import {
   useAccounts,
   useAccountUsageResetCredits,
+  useServiceModels,
 } from "@/features/accounts/hooks/use-accounts";
 import {
   DEFAULT_ACCOUNT_SORT_MODE,
@@ -46,6 +48,7 @@ export function AccountsPage() {
     pauseMutation,
     resumeMutation,
     setAliasMutation,
+    setRoutingNameMutation,
     probeMutation,
     usageResetMutation,
     limitWarmupMutation,
@@ -56,6 +59,7 @@ export function AccountsPage() {
   } = useAccounts();
   const { settingsQuery } = useSettings();
   const canWrite = usePermission("accounts:write");
+  const { query: serviceModelsQuery, mutation: serviceModelsMutation } = useServiceModels(canWrite);
   // Upstream-proxy administration is an `ops:write` read on the backend; cached
   // data from an earlier admin session must not be rendered either.
   const canReadUpstreamProxy = usePermission("ops:write");
@@ -124,6 +128,7 @@ export function AccountsPage() {
     pauseMutation.isPending ||
     resumeMutation.isPending ||
     setAliasMutation.isPending ||
+    setRoutingNameMutation.isPending ||
     probeMutation.isPending ||
     usageResetMutation.isPending ||
     limitWarmupMutation.isPending ||
@@ -132,13 +137,15 @@ export function AccountsPage() {
     exportAuthMutation.isPending ||
     updateMutation.isPending ||
     accountBindingMutation.isPending ||
-    testEndpointMutation.isPending;
+    testEndpointMutation.isPending ||
+    serviceModelsMutation.isPending;
 
   const mutationError =
     getErrorMessageOrNull(importMutation.error) ||
     getErrorMessageOrNull(pauseMutation.error) ||
     getErrorMessageOrNull(resumeMutation.error) ||
     getErrorMessageOrNull(setAliasMutation.error) ||
+    getErrorMessageOrNull(setRoutingNameMutation.error) ||
     getErrorMessageOrNull(probeMutation.error) ||
     getErrorMessageOrNull(usageResetMutation.error) ||
     getErrorMessageOrNull(limitWarmupMutation.error) ||
@@ -209,6 +216,9 @@ export function AccountsPage() {
             onSetAlias={(accountId, alias) =>
               setAliasMutation.mutateAsync({ accountId, alias })
             }
+            onSetRoutingName={(accountId, routingName) =>
+              setRoutingNameMutation.mutateAsync({ accountId, routingName })
+            }
             onDelete={(accountId) => deleteDialog.show(accountId)}
             onReauth={() => {
               setOauthAccountId(selectedAccount?.accountId ?? null);
@@ -254,6 +264,15 @@ export function AccountsPage() {
           />
         </div>
       )}
+
+      {canWrite && serviceModelsQuery.data ? (
+        <ServiceModelsEditor
+          models={serviceModelsQuery.data.models}
+          busy={mutationBusy}
+          readOnly={!canWrite}
+          onSave={(models) => serviceModelsMutation.mutateAsync(models)}
+        />
+      ) : null}
 
       <ImportDialog
         open={importDialog.open}

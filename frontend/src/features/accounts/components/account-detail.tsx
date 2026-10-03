@@ -35,6 +35,7 @@ export type AccountDetailProps = {
   onProbe: (accountId: string) => void;
   onResetUsage: (accountId: string) => void;
   onSetAlias: (accountId: string, alias: string | null) => Promise<unknown>;
+  onSetRoutingName?: (accountId: string, routingName: string | null) => Promise<unknown>;
   onDelete: (accountId: string) => void;
   onReauth: () => void;
   onExportAuth: (accountId: string) => void;
@@ -64,6 +65,7 @@ export function AccountDetail({
   onProbe,
   onResetUsage,
   onSetAlias,
+  onSetRoutingName = async () => undefined,
   onDelete,
   onReauth,
   onExportAuth,
@@ -134,6 +136,16 @@ export function AccountDetail({
           readOnly={readOnly}
           onSetAlias={onSetAlias}
         />
+        <RoutingNameField
+          accountId={account.accountId}
+          routingName={account.routingName ?? null}
+          busy={busy}
+          readOnly={readOnly}
+          onSetRoutingName={onSetRoutingName}
+          label={t("accounts.detail.routingNameLabel")}
+          placeholder={t("accounts.detail.routingNamePlaceholder")}
+          saveLabel={t("accounts.detail.saveRoutingName")}
+        />
         {emailSubtitle ? (
           <p
             className="mt-0.5 text-xs text-muted-foreground"
@@ -188,6 +200,51 @@ export function AccountDetail({
         onRoutingPolicyChange={onRoutingPolicyChange}
         onSecurityWorkAuthorizedChange={onSecurityWorkAuthorizedChange}
       />
+    </div>
+  );
+}
+
+function RoutingNameField({
+  accountId,
+  routingName,
+  busy,
+  readOnly,
+  onSetRoutingName,
+  label,
+  placeholder,
+  saveLabel,
+}: {
+  accountId: string;
+  routingName: string | null;
+  busy: boolean;
+  readOnly: boolean;
+  onSetRoutingName: (accountId: string, routingName: string | null) => Promise<unknown>;
+  label: string;
+  placeholder: string;
+  saveLabel: string;
+}) {
+  const [draft, setDraft] = useState(routingName ?? "");
+  const save = async () => onSetRoutingName(accountId, draft.trim() || null);
+  return (
+    <div className="mt-2 space-y-1">
+      <label className="text-xs text-muted-foreground" htmlFor={`routing-name-${accountId}`}>
+        {label}
+      </label>
+      <div className="flex items-center gap-2">
+        <Input
+          id={`routing-name-${accountId}`}
+          className="h-8"
+          maxLength={64}
+          pattern="[a-z0-9][a-z0-9_-]*"
+          placeholder={placeholder}
+          value={draft}
+          disabled={busy || readOnly}
+          onChange={(event) => setDraft(event.target.value.toLowerCase())}
+        />
+        <Button type="button" variant="outline" size="sm" disabled={busy || readOnly} onClick={() => void save()}>
+          {saveLabel}
+        </Button>
+      </div>
     </div>
   );
 }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, Request, Response
+from sqlalchemy.exc import IntegrityError
 
 from app.core.audit.service import AuditActor, AuditService, AuditTarget
 from app.core.auth.dashboard_access import DashboardPrincipal, Permission
@@ -37,6 +38,8 @@ from app.modules.accounts.schemas import (
     AccountProbeRequest,
     AccountProbeResponse,
     AccountReactivateResponse,
+    AccountRoutingNameRequest,
+    AccountRoutingNameResponse,
     AccountRoutingPolicyUpdateRequest,
     AccountRoutingPolicyUpdateResponse,
     AccountsResponse,
@@ -46,6 +49,8 @@ from app.modules.accounts.schemas import (
     AccountUsageResetConsumeRequest,
     AccountUsageResetConsumeResponse,
     AccountUsageResetCreditsResponse,
+    ServiceModelsRequest,
+    ServiceModelsResponse,
 )
 from app.modules.accounts.service import (
     AccountNotProbableError,
@@ -374,6 +379,43 @@ async def set_account_alias(
     if normalized == "":
         normalized = None
     return AccountAliasResponse(account_id=account_id, alias=normalized)
+
+
+@router.put("/{account_id}/routing-name", response_model=AccountRoutingNameResponse)
+async def set_account_routing_name(
+    account_id: str,
+    payload: AccountRoutingNameRequest,
+    _write_access=Depends(require_dashboard_permission(Permission.ACCOUNTS_WRITE)),
+    context: AccountsContext = Depends(get_accounts_context),
+) -> AccountRoutingNameResponse:
+    try:
+        success = await context.service.set_routing_name(account_id, payload.routing_name)
+    except IntegrityError as exc:
+        raise DashboardConflictError("Routing name is already assigned", code="account_routing_name_conflict") from exc
+    if not success:
+        raise DashboardNotFoundError("Account not found", code="account_not_found")
+    return AccountRoutingNameResponse(account_id=account_id, routing_name=payload.routing_name)
+
+
+@router.get("/service-models", response_model=ServiceModelsResponse)
+async def list_service_models(
+    _read_access=Depends(require_dashboard_permission(Permission.ACCOUNTS_READ)),
+    context: AccountsContext = Depends(get_accounts_context),
+) -> ServiceModelsResponse:
+    return ServiceModelsResponse(models=await context.service.service_models())
+
+
+@router.put("/service-models", response_model=ServiceModelsResponse)
+async def set_service_models(
+    payload: ServiceModelsRequest,
+    _write_access=Depends(require_dashboard_permission(Permission.ACCOUNTS_WRITE)),
+    context: AccountsContext = Depends(get_accounts_context),
+) -> ServiceModelsResponse:
+    try:
+        models = await context.service.replace_service_models(payload.models)
+    except ValueError as exc:
+        raise DashboardBadRequestError(str(exc), code="invalid_service_models") from exc
+    return ServiceModelsResponse(models=models)
 
 
 @router.put("/{account_id}/limit-warmup", response_model=AccountLimitWarmupUpdateResponse)

@@ -262,6 +262,7 @@ def _account_to_summary(
         chatgpt_account_id=None if redact_identity else account.chatgpt_account_id,
         email=email,
         alias=account.alias,
+        routing_name=account.routing_name,
         display_name=account.alias or email,
         workspace_id=None if redact_identity else account.workspace_id,
         workspace_label=None if redact_identity else account.workspace_label,

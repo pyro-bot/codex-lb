@@ -59,6 +59,7 @@ export const ApiKeySchema = z.object({
     .nullable()
     .default(null),
   usageSections: z.string().default("upstream_limits,account_pool_usage"),
+  namespacePlanningEnabled: z.boolean().default(false),
   expiresAt: z.iso.datetime({ offset: true }).nullable(),
   isActive: z.boolean(),
   accountAssignmentScopeEnabled: z.boolean().default(false),
@@ -74,12 +75,13 @@ export const ApiKeySchema = z.object({
   pooledCapacityCreditsPrimary: z.number().default(0),
 });
 
-export const USAGE_SECTIONS = ["upstream_limits", "account_pool_usage"] as const;
+export const USAGE_SECTIONS = ["upstream_limits", "account_pool_usage", "account_credits"] as const;
 export type UsageSection = (typeof USAGE_SECTIONS)[number];
 
 export const USAGE_SECTION_LABELS: Record<UsageSection, string> = {
   upstream_limits: "Upstream limits",
   account_pool_usage: "Account pool usage",
+  account_credits: "Account credits",
 };
 
 export const ApiKeyCreateRequestSchema = z.object({
@@ -96,6 +98,7 @@ export const ApiKeyCreateRequestSchema = z.object({
     .nullable()
     .optional(),
   usageSections: z.string().optional(),
+  namespacePlanningEnabled: z.boolean().optional(),
   weeklyTokenLimit: z.number().int().positive().nullable().optional(),
   expiresAt: z.iso.datetime({ offset: true }).nullable().optional(),
   assignedAccountIds: z.array(z.string()).optional(),
@@ -121,6 +124,7 @@ export const ApiKeyUpdateRequestSchema = z.object({
     .nullable()
     .optional(),
   usageSections: z.string().optional(),
+  namespacePlanningEnabled: z.boolean().optional(),
   weeklyTokenLimit: z.number().int().positive().nullable().optional(),
   expiresAt: z.iso.datetime({ offset: true }).nullable().optional(),
   isActive: z.boolean().optional(),

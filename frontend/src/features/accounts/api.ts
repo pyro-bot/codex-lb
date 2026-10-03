@@ -4,6 +4,8 @@ import {
   AccountActionResponseSchema,
   AccountAliasRequestSchema,
   AccountAliasResponseSchema,
+  AccountRoutingNameRequestSchema,
+  AccountRoutingNameResponseSchema,
   AccountAuthExportResponseSchema,
   AccountImportResponseSchema,
   AccountLimitWarmupUpdateRequestSchema,
@@ -28,6 +30,7 @@ import {
   OauthStatusResponseSchema,
   RateLimitResetCreditsSnapshotSchema,
   RuntimeConnectAddressResponseSchema,
+  ServiceModelsResponseSchema,
 } from "@/features/accounts/schemas";
 import type {
   AccountRoutingPolicy,
@@ -70,6 +73,23 @@ export function setAccountAlias(accountId: string, alias: string | null) {
     AccountAliasResponseSchema,
     { body: validated },
   );
+}
+
+export function setAccountRoutingName(accountId: string, routingName: string | null) {
+  const validated = AccountRoutingNameRequestSchema.parse({ routingName });
+  return put(
+    `${ACCOUNTS_BASE_PATH}/${encodeURIComponent(accountId)}/routing-name`,
+    AccountRoutingNameResponseSchema,
+    { body: validated },
+  );
+}
+
+export function getServiceModels() {
+  return get(`${ACCOUNTS_BASE_PATH}/service-models`, ServiceModelsResponseSchema);
+}
+
+export function setServiceModels(models: string[]) {
+  return put(`${ACCOUNTS_BASE_PATH}/service-models`, ServiceModelsResponseSchema, { body: { models } });
 }
 
 export function updateAccount(accountId: string, payload: unknown) {
